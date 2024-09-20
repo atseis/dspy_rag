@@ -2,7 +2,7 @@ import dspy
 import os
 from dotenv import load_dotenv
 
-from DeepSeek import DeepSeek
+from lms.DeepSeek import DeepSeek
 from dspy.retrieve.chromadb_rm import ChromadbRM
 import os
 import openai
