@@ -17,7 +17,8 @@ def insert_to_chromadb(client, collection, text_chunks):
     )
 
 # Initialize the client
-client = QdrantClient(path="./data/fufu_qdrant.db")  # or QdrantClient(path="path/to/db")
+# client = QdrantClient(path="./data/fufu_qdrant.db")  # or QdrantClient(path="path/to/db")
+client = QdrantClient(url="http://127.0.0.1:6333")  # 指向 Qdrant Server
 
 file_path  = './data/fufu_ds.txt'
 chunks=load_and_split_text(file_path)

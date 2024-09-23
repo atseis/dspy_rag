@@ -17,8 +17,32 @@ from pydantic import BaseModel
 app = FastAPI()
 
 TOP_K = 5
+import json
 
+file_path = './data/tables.json'
+with open(file_path, 'r', encoding='utf-8') as f:
+    tables_dict = json.load(f)
+# 设置环境
+load_dotenv()
+api_key = os.getenv("DEEPSEEK_API_KEY")
 
+lm = DeepSeek(model='deepseek-chat', api_key=api_key)
+
+# client = QdrantClient(path="./data/fufu_qdrant.db")  # or QdrantClient(path="path/to/db")
+client = QdrantClient(url="http://localhost:6333")  # 指向 Qdrant Server
+
+qdrant_collection_name="fufu_descriptions_no_cols"
+qdrant_retriever = QdrantRM(
+    qdrant_client=client,
+    qdrant_collection_name=qdrant_collection_name,
+    # vectorizer=vectorizer,
+    # document_field="text",
+    k=TOP_K
+)
+
+dspy.configure(lm=lm, rm= qdrant_retriever)
+# retrieve=dspy.Retrieve()
+# retrieve("请帮我查询态势平台的所有角色的信息，包括角色名称、角色编码")
 def extract_table_name(s):
     en = re.search(r'CREATE TABLE `([^`]+)`', s).group(1)
     ch = re.search(r'COMMENT\s*=\s*\'([^\']*)\'', s).group(1)
@@ -37,8 +61,12 @@ class RAG_query(dspy.Module):
         self.retrieve=dspy.Retrieve()
         self.generate_answer=dspy.ChainOfThought(GenSQL_based_on_query)
     def forward(self, query):
-        context= self.retrieve(query).passages
-        tables = [extract_table_name(t) for t in context]
+        search_result = client.query(
+            collection_name=qdrant_collection_name,
+            query_text=query
+        )[:5]
+        tables = [r.metadata['table'] for r in search_result]
+        context = [tables_dict[table] for table in tables if table in tables_dict]
         prediction=self.generate_answer(query=query,context=context)
         # return dspy.Prediction(context=context, answer=prediction.answer)
         return prediction.answer, tables
@@ -56,7 +84,7 @@ class GenSQL_based_on_query_and_feedback(dspy.Signature):
     history = dspy.InputField(desc="Conversation history between user and LLM.")
     context = dspy.InputField(desc="Relevant tables retrieved from database based on User Input")
     answer = dspy.OutputField(desc="If the provided information is sufficient to generate SQL, then return the SQL and the names(includes the Chinese names) of the relevant tables currently retrieved ; otherwise, return the current generation status (the names of the relevant tables currently retrieved, communicate with the user to confirm the retrieval results, and describe what additional information is needed for generation).")
-    tables = dspy.OutputField(desc='Extract all the names of tables from context both in English and Chinese')
+    # tables = dspy.OutputField(desc='Extract all the names of tables from context both in English and Chinese')
 
 class RAG_query_feedback(dspy.Module):
     def __init__(self):
@@ -64,32 +92,19 @@ class RAG_query_feedback(dspy.Module):
         self.retrieve=dspy.Retrieve()
         self.generate_answer=dspy.ChainOfThought(GenSQL_based_on_query_and_feedback)
     def forward(self, feedback, history):
+        search_result = client.query(
+            collection_name=qdrant_collection_name,
+            query_text='\n'.join(history)+"\nUser's feedback: "+feedback
+        )[:5]
+        tables = [r.metadata['table'] for r in search_result]
+        context = [tables_dict[table] for table in tables if table in tables_dict]
         # tables
-        context = self.retrieve('\n'.join(history)+"\nUser's feedback: "+feedback).passages
-        tables = [extract_table_name(t) for t in context]
+        # context = self.retrieve('\n'.join(history)+"\nUser's feedback: "+feedback).passages
+        # tables = [extract_table_name(t) for t in context]
         prediction = self.generate_answer(feedback=feedback, history='\n'.join(history), context=context)
         return prediction.answer, tables
 
-# 设置环境
-load_dotenv()
-api_key = os.getenv("DEEPSEEK_API_KEY")
 
-lm = DeepSeek(model='deepseek-chat', api_key=api_key)
-
-# client = QdrantClient(path="./data/fufu_qdrant.db")  # or QdrantClient(path="path/to/db")
-client = QdrantClient(url="http://localhost:6333")  # 指向 Qdrant Server
-
-qdrant_retriever = QdrantRM(
-    qdrant_client=client,
-    qdrant_collection_name="fufu",
-    # vectorizer=vectorizer,
-    # document_field="text",
-    k=TOP_K
-)
-
-dspy.configure(lm=lm, rm= qdrant_retriever)
-# retrieve=dspy.Retrieve()
-# retrieve("请帮我查询态势平台的所有角色的信息，包括角色名称、角色编码")
 
 # 创建模块
 gensql = RAG_query()
@@ -97,12 +112,13 @@ intent_recognizer = dspy.ChainOfThought(Sig_UserIntentRecog)
 adjustsql = RAG_query_feedback()
 
 # ======================================== 命令行 ===============================
-# # 搭建 Pipeline
+# 搭建 Pipeline
 # query = input("User: >>> ")
 # while(True):
 #     history = []
 #     answer, tables = gensql(query)
-#     tables = ', '.join([t[0]+'='+t[1] for t in tables])
+#     # tables = ', '.join([t[0]+'='+t[1] for t in tables])
+#     tables = ', '.join(tables)
 #     output =answer+'\nRelevant tables are as follows:\n'+tables
 #     print('Assistant: >>> '+output)
 
@@ -113,8 +129,10 @@ adjustsql = RAG_query_feedback()
 #     intent = intent_recognizer(query=feedback).intent
 #     while(intent =='feedback'):
 #         answer, tables = adjustsql(feedback, history)
+#         tables = ', '.join(tables)
 #         output =answer+'\nRelevant tables are as follows:\n'+tables
-#         tables = ', '.join([t[0]+'='+t[1] for t in tables])
+#         tables = ', '.join(tables)
+#         # tables = ', '.join([t[0]+'='+t[1] for t in tables])
 #         print('Assistant: >>> '+output)
 #         history.append("User: "+feedback)
 #         history.append("Assistant: "+output)
@@ -129,6 +147,7 @@ adjustsql = RAG_query_feedback()
 
 # ======================================== fastapi ===============================
 # 会话状态存储 (全局变量)
+
 session_state = {
     'history': [],
     'intent': 'new',
@@ -148,7 +167,8 @@ def handle_query(input_data: QueryModel):
     if session_state['intent'] == 'new':
         session_state['query'] = query
         answer, tables = gensql(query)
-        tables_str = ', '.join([t[0]+'='+t[1] for t in tables])
+        # tables_str = ', '.join([t[0]+'='+t[1] for t in tables])
+        tables_str = ', '.join(tables)
         output = answer + '\nRelevant tables are as follows:\n' + tables_str
         session_state['history'].append(f"User: {query}")
         session_state['history'].append(f"Assistant: {output}")
@@ -159,7 +179,8 @@ def handle_query(input_data: QueryModel):
     elif session_state['intent'] == 'feedback':
         session_state['feedback'] = query
         answer, tables = adjustsql(session_state['feedback'], session_state['history'])
-        tables_str = ', '.join([t[0]+'='+t[1] for t in tables])
+        # tables_str = ', '.join([t[0]+'='+t[1] for t in tables])
+        tables_str = ', '.join(tables)
         output = answer + '\nRelevant tables are as follows:\n' + tables_str
         session_state['history'].append(f"User: {query}")
         session_state['history'].append(f"Assistant: {output}")
