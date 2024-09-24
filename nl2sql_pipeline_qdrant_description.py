@@ -1,3 +1,4 @@
+import time
 import debugpy,uvicorn
 import streamlit as st
 import dspy
@@ -49,10 +50,10 @@ def extract_table_name(s):
     return en,ch
 # 对一个新查询的 SQL 生成 query + context -> answer
 class GenSQL_based_on_query(dspy.Signature):
-    """This is an NL2SQL task that requires generating SQL based on user input and relevant table creation statements matched from the database."""
+    """It's a NL2SQL task"""
     query = dspy.InputField(desc='User Input')
-    context = dspy.InputField(desc="Relevant tables retrieved from database based on User Input")
-    answer = dspy.OutputField(desc="If the provided information is sufficient to generate SQL, then return the generated SQL; otherwise, return the current generation status (communicate with the user to confirm the retrieval results, and describe what additional information is needed for generation .etc).")
+    context = dspy.InputField(desc="Relevant tables")
+    answer = dspy.OutputField(desc="generated sql")
     # tables = dspy.OutputField(desc='Extract all the names of tables from context both in English and Chinese')
 
 class RAG_query(dspy.Module):
@@ -73,17 +74,17 @@ class RAG_query(dspy.Module):
 
 # 判断用户输入内容的种类、意图 query -> intent
 class Sig_UserIntentRecog(dspy.Signature):
-    """Determine the category and intent of the user input: a new query? Feedback on the old query result? Execute the generated SQL?"""
+    """Determine the intent of user input with only a number"""
     query = dspy.InputField()
-    intent = dspy.OutputField(desc='If it is a new query (i.e., unrelated to previous conversations), output new; if it is to execute SQL (generated SQL results will be given in previous conversations), output exec; otherwise, treat it as feedback on previous conversation content, output feedback; only the above three outputs are possible, no additional or other content in output')
+    intent = dspy.OutputField(desc='output 1 if input is a new query; output 2 if input is a feedback')
 
 # 基于用户的反馈，重新生成 SQL 内容  feedback + history + context -> answer
 class GenSQL_based_on_query_and_feedback(dspy.Signature):
-    """This is a NL2SQL task to adjust the SQL generated based on user's feedback, its relevant table creation statements matched from the database and the conversation history."""
+    """It's a NL2SQL task based on conversation history and user's feedback"""
     feedback = dspy.InputField()
     history = dspy.InputField(desc="Conversation history between user and LLM.")
-    context = dspy.InputField(desc="Relevant tables retrieved from database based on User Input")
-    answer = dspy.OutputField(desc="If the provided information is sufficient to generate SQL, then return the SQL and the names(includes the Chinese names) of the relevant tables currently retrieved ; otherwise, return the current generation status (the names of the relevant tables currently retrieved, communicate with the user to confirm the retrieval results, and describe what additional information is needed for generation).")
+    context = dspy.InputField(desc="Relevant tables")
+    answer = dspy.OutputField(desc="generated sql")
     # tables = dspy.OutputField(desc='Extract all the names of tables from context both in English and Chinese')
 
 class RAG_query_feedback(dspy.Module):
@@ -150,7 +151,7 @@ adjustsql = RAG_query_feedback()
 
 session_state = {
     'history': [],
-    'intent': 'new',
+    'intent': '1',
     'query': '',
     'feedback': ''
 }
@@ -162,30 +163,48 @@ class QueryModel(BaseModel):
 @app.post("/query")
 def handle_query(input_data: QueryModel):
     query = input_data.query
-    
-    # 新查询阶段
-    if session_state['intent'] == 'new':
-        session_state['query'] = query
-        answer, tables = gensql(query)
-        # tables_str = ', '.join([t[0]+'='+t[1] for t in tables])
-        tables_str = ', '.join(tables)
-        output = answer + '\nRelevant tables are as follows:\n' + tables_str
-        session_state['history'].append(f"User: {query}")
-        session_state['history'].append(f"Assistant: {output}")
+    if session_state['intent'] =='0':
+        start_time = time.time()
         session_state['intent'] = intent_recognizer(query=query).intent
-        return {"output": output, "intent": session_state['intent'], "history": session_state['history']}
+        end_time = time.time()
+        print(f"intent_recognizer 运行时间: {end_time - start_time} 秒")
 
-    # 反馈调整阶段
-    elif session_state['intent'] == 'feedback':
-        session_state['feedback'] = query
-        answer, tables = adjustsql(session_state['feedback'], session_state['history'])
+    if session_state['intent'] =='1': # new query
+        session_state['history'] =[]
+        session_state['query'] = query
+
+        start_time = time.time()
+        answer, tables = gensql(query)
+        end_time = time.time()
+        print(f"gensql 运行时间: {end_time - start_time} 秒")
+
         # tables_str = ', '.join([t[0]+'='+t[1] for t in tables])
         tables_str = ', '.join(tables)
         output = answer + '\nRelevant tables are as follows:\n' + tables_str
         session_state['history'].append(f"User: {query}")
         session_state['history'].append(f"Assistant: {output}")
-        session_state['intent'] = intent_recognizer(query=query).intent
+
+        session_state['intent']='0'
         return {"output": output, "intent": session_state['intent'], "history": session_state['history']}
+    elif session_state['intent'] =='2': # feedback 
+        session_state['feedback'] = query
+
+        start_time = time.time()
+        answer, tables = adjustsql(session_state['feedback'], session_state['history'])
+        end_time = time.time()
+        print(f"adjustsql 运行时间: {end_time - start_time} 秒")
+        
+        # tables_str = ', '.join([t[0]+'='+t[1] for t in tables])
+        tables_str = ', '.join(tables)
+        output = answer + '\nRelevant tables are as follows:\n' + tables_str
+        session_state['history'].append(f"User: {query}")
+        session_state['history'].append(f"Assistant: {output}")
+        
+        session_state['intent']='0'
+        return {"output": output, "intent": session_state['intent'], "history": session_state['history']}
+    else:
+        print("XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX")
+        print(session_state['intent'])
 
 
 @app.get("/history")
