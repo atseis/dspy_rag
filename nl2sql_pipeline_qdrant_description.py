@@ -6,6 +6,7 @@ from qdrant_client import QdrantClient
 import os
 from dotenv import load_dotenv
 
+from lms.NL2SQL import NL2SQL
 from lms.DeepSeek import DeepSeek
 from dspy.retrieve.chromadb_rm import ChromadbRM
 import os
@@ -151,7 +152,7 @@ adjustsql = RAG_query_feedback()
 
 session_state = {
     'history': [],
-    'intent': '1',
+    'intent': 1,
     'query': '',
     'feedback': ''
 }
@@ -160,16 +161,19 @@ session_state = {
 class QueryModel(BaseModel):
     query: str
 
+recog = NL2SQL()
+
 @app.post("/query")
 def handle_query(input_data: QueryModel):
     query = input_data.query
-    if session_state['intent'] =='0':
+    if session_state['intent'] ==0:
         start_time = time.time()
-        session_state['intent'] = intent_recognizer(query=query).intent
+        # session_state['intent'] = intent_recognizer(query=query).intent
+        session_state['intent'] = recog.intent_recog(query)
         end_time = time.time()
         print(f"intent_recognizer 运行时间: {end_time - start_time} 秒")
 
-    if session_state['intent'] =='1': # new query
+    if session_state['intent'] ==1: # new query
         session_state['history'] =[]
         session_state['query'] = query
 
@@ -184,9 +188,9 @@ def handle_query(input_data: QueryModel):
         session_state['history'].append(f"User: {query}")
         session_state['history'].append(f"Assistant: {output}")
 
-        session_state['intent']='0'
+        session_state['intent']=0
         return {"output": output, "intent": session_state['intent'], "history": session_state['history']}
-    elif session_state['intent'] =='2': # feedback 
+    elif session_state['intent'] ==2: # feedback 
         session_state['feedback'] = query
 
         start_time = time.time()
@@ -200,7 +204,7 @@ def handle_query(input_data: QueryModel):
         session_state['history'].append(f"User: {query}")
         session_state['history'].append(f"Assistant: {output}")
         
-        session_state['intent']='0'
+        session_state['intent']=0
         return {"output": output, "intent": session_state['intent'], "history": session_state['history']}
     else:
         print("XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX")
